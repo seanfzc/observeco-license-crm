@@ -24,6 +24,8 @@ git push origin main
 
 ## API Routes
 
+*(deployed 2026-05-31 v2)*
+
 | Method | Route | Auth | Description |
 |--------|-------|------|-------------|
 | POST | `/api/licenses/validate` | None | Validate a license key |
