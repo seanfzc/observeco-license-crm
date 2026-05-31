@@ -1,0 +1,9 @@
+{
+  "name": "observeco-licensing",
+  "version": "1.0.0",
+  "description": "ObserveCo Licensing API — Supabase + Stripe",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "stripe": "^14.14.0"
+  }
+}
