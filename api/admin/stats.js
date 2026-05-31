@@ -21,7 +21,7 @@ module.exports = async function handler(req, res) {
 
     if (error) {
       console.error('stats error:', error);
-      return res.status(500).json({ error: 'Query failed' });
+      return res.status(500).json({ error: 'Query failed', detail: error.message || String(error) });
     }
 
     const counts = { active: 0, trialing: 0, expired: 0, cancelled: 0, total: 0 };
@@ -33,6 +33,6 @@ module.exports = async function handler(req, res) {
     return res.status(200).json(counts);
   } catch (err) {
     console.error('stats error:', err);
-    return res.status(500).json({ error: 'Internal error' });
+    return res.status(500).json({ error: 'Internal error', detail: err.message || String(err) });
   }
 };
