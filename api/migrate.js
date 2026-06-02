@@ -1,29 +1,9 @@
-// POST /api/migrate — One-shot Supabase schema migration
-// Secret: MIGRATE_SECRET env var (set once, remove after use)
+// POST /api/migrate — Run Supabase schema migration once.
+// Usage: POST with header "Authorization: Bearer <MIGRATE_SECRET>"
 const { createClient } = require('@supabase/supabase-js');
 
-module.exports = async function handler(req, res) {
-  const auth = req.headers['authorization'] || '';
-  const migrateSecret = process.env.MIGRATE_SECRET;
-  if (!migrateSecret || auth !== `Bearer ${migrateSecret}`) {
-    return res.status(401).json({ error: 'Unauthorized — use MIGRATE_SECRET' });
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  try {
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY
-    );
-
-    const sql = `-- ObserveCo Licensing Schema
--- Run this in your Supabase SQL Editor (one time)
-
--- Products table (public read)
-CREATE TABLE IF NOT EXISTS products (
+const SQL = `
+CREATE TABLE IF NOT EXISTS public.products (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   name TEXT NOT NULL,
   slug TEXT UNIQUE NOT NULL,
@@ -33,115 +13,100 @@ CREATE TABLE IF NOT EXISTS products (
   price_display TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-
--- Seed products
-INSERT INTO products (name, slug, stripe_price_id, features, trial_days, price_display)
+INSERT INTO public.products (name, slug, stripe_price_id, features, trial_days, price_display)
 VALUES
-  ('Free', 'free', NULL, '["fleet_view", "pulse_check", "circuit_breakers", "token_breakdown", "drift_trend", "error_history", "heal_button", "alerts", "memory_garden", "cli_tools"]'::jsonb, 0, '$0'),
-  ('Solo', 'solo', 'price_solo_monthly', '["free_features", "pro_badge", "license_validation", "stripe_checkout", "auto_heal"]'::jsonb, 30, '$9/mo')
+  ('Free', 'free', NULL, '["fleet_view","pulse_check","circuit_breakers","token_breakdown","drift_trend","error_history","heal_button","alerts","memory_garden","cli_tools"]'::jsonb, 0, '$0'),
+  ('Solo', 'solo', 'price_solo_monthly', '["free_features","pro_badge","license_validation","stripe_checkout","auto_heal"]'::jsonb, 30, '$9/mo')
 ON CONFLICT (slug) DO NOTHING;
-
--- Licenses table
-CREATE TABLE IF NOT EXISTS licenses (
+CREATE TABLE IF NOT EXISTS public.licenses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_slug TEXT REFERENCES products(slug),
+  product_slug TEXT REFERENCES public.products(slug),
   email TEXT NOT NULL,
   name TEXT,
   license_key TEXT UNIQUE NOT NULL,
-  status TEXT DEFAULT 'trialing' CHECK (status IN ('trialing', 'active', 'expired', 'cancelled')),
-  trial_ends_at TIMESTAMPTZ,
-  expires_at TIMESTAMPTZ,
-  stripe_subscription_id TEXT,
-  stripe_customer_id TEXT,
-  issued_by TEXT DEFAULT 'self' CHECK (issued_by IN ('self', 'stripe', 'admin')),
-  metadata JSONB DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  status TEXT DEFAULT 'trialing' CHECK (status IN ('trialing','active','expired','cancelled','suspended')),
+  trial_ends_at TIMESTAMPTZ, expires_at TIMESTAMPTZ,
+  stripe_subscription_id TEXT, stripe_customer_id TEXT,
+  issued_by TEXT DEFAULT 'self' CHECK (issued_by IN ('self','stripe','admin')),
+  notes TEXT DEFAULT '', metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
 );
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_licenses_key ON licenses(license_key);
-CREATE INDEX IF NOT EXISTS idx_licenses_email ON licenses(email);
-CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status);
-
--- RLS: allow public read on products
-ALTER TABLE products ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS products_public_read ON products;
-CREATE POLICY products_public_read ON products
-  FOR SELECT USING (true);
-
--- RLS: allow service_role insert/select on licenses
-ALTER TABLE licenses ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS licenses_service_access ON licenses;
-CREATE POLICY licenses_service_access ON licenses
-  FOR ALL USING (true)
-  WITH CHECK (true);
-
--- License validation log
-CREATE TABLE IF NOT EXISTS validations_log (
+CREATE INDEX IF NOT EXISTS idx_licenses_key ON public.licenses(license_key);
+CREATE INDEX IF NOT EXISTS idx_licenses_email ON public.licenses(email);
+CREATE INDEX IF NOT EXISTS idx_licenses_status ON public.licenses(status);
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS products_public_read ON public.products;
+CREATE POLICY products_public_read ON public.products FOR SELECT USING (true);
+ALTER TABLE public.licenses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS licenses_service_access ON public.licenses;
+CREATE POLICY licenses_service_access ON public.licenses FOR ALL USING (true) WITH CHECK (true);
+CREATE TABLE IF NOT EXISTS public.validations_log (
   id BIGSERIAL PRIMARY KEY,
-  license_key TEXT NOT NULL REFERENCES licenses(license_key) ON DELETE CASCADE,
-  success BOOLEAN NOT NULL,
-  ip_address TEXT,
-  user_agent TEXT,
-  machine_id TEXT,
-  error_message TEXT,
+  license_key TEXT NOT NULL REFERENCES public.licenses(license_key) ON DELETE CASCADE,
+  success BOOLEAN NOT NULL, ip_address TEXT, user_agent TEXT, machine_id TEXT,
+  error_message TEXT, created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_validations_key ON public.validations_log(license_key);
+CREATE INDEX IF NOT EXISTS idx_validations_ts ON public.validations_log(created_at);
+CREATE TABLE IF NOT EXISTS public.admin_audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  action TEXT NOT NULL, license_key TEXT,
+  old_values JSONB, new_values JSONB,
+  admin_id TEXT DEFAULT 'admin', ip_address TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS idx_validations_key ON validations_log(license_key);
-CREATE INDEX IF NOT EXISTS idx_validations_ts ON validations_log(created_at);
-
--- Admin audit log
-CREATE TABLE IF NOT EXISTS admin_audit_log (
-  id BIGSERIAL PRIMARY KEY,
-  action TEXT NOT NULL,
-  license_key TEXT,
-  old_values JSONB,
-  new_values JSONB,
-  admin_id TEXT DEFAULT 'admin',
-  ip_address TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_key ON admin_audit_log(license_key);
-CREATE INDEX IF NOT EXISTS idx_audit_ts ON admin_audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_key ON public.admin_audit_log(license_key);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON public.admin_audit_log(created_at);
 `;
 
-    // Execute via raw SQL using the service role key's ability
-    // Supabase supports POST to /rest/v1/rpc/ with raw SQL via pg_query extension
-    const statements = sql
-      .split(';')
-      .map(s => s.trim())
-      .filter(s => s && !s.startsWith('--') && s.length > 5);
+module.exports = async function handler(req, res) {
+  const secret = process.env.MIGRATE_SECRET;
+  const auth = req.headers['authorization'] || '';
+  if (!secret || auth !== `Bearer ${secret}`) return res.status(401).json({ error: 'Unauthorized' });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    const results = [];
-    for (const stmt of statements) {
-      const fullStmt = stmt + ';';
-      try {
-        // Try executing via supabase-js raw query
-        // If this fails, we need the pg_query extension
-        const { error } = await supabase.rpc('exec_sql', { query: fullStmt });
-        if (error) throw error;
-        results.push({ status: 'ok', sql: fullStmt.substring(0, 60) });
-      } catch (e) {
-        results.push({ status: 'error', sql: fullStmt.substring(0, 60), error: e.message });
+  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  // Try rpc-based SQL execution
+  const stmts = SQL.split(';').map(s => s.trim()).filter(s => s && s.length > 10 && !s.startsWith('--'));
+  const results = [];
+  let allOk = true;
+
+  for (let i = 0; i < stmts.length; i++) {
+    const sql = stmts[i] + ';';
+    try {
+      const { error } = await supabase.rpc('exec_sql', { query: sql });
+      if (error) {
+        results.push({ n: i + 1, status: 'error', error: error.message, sql: sql.substring(0, 60) });
+        allOk = false;
+      } else {
+        results.push({ n: i + 1, status: 'ok', sql: sql.substring(0, 60) });
       }
+    } catch (e) {
+      results.push({ n: i + 1, status: 'error', error: e.message, sql: sql.substring(0, 60) });
+      allOk = false;
     }
-
-    // Verify products table
-    const { data: products } = await supabase.from('products').select('*').limit(5);
-    const { data: licenses } = await supabase.from('licenses').select('count', { count: 'exact', head: true });
-
-    return res.status(200).json({
-      status: 'ok',
-      statements: results.length,
-      sql_errors: results.filter(r => r.status === 'error').length,
-      products: products || [],
-      license_count: licenses?.count ?? 0,
-    });
-  } catch (err) {
-    console.error('migration error:', err);
-    return res.status(500).json({ error: err.message });
   }
+
+  // Verify
+  let verify = {};
+  try {
+    const { data: products } = await supabase.from('products').select('slug').limit(10);
+    verify.products = products;
+  } catch (e) { verify.productsError = e.message; }
+  try {
+    const { data: licenses } = await supabase.from('licenses').select('count', { count: 'exact', head: true });
+    verify.licenseCount = licenses;
+  } catch (e) { verify.licensesError = e.message; }
+
+  return res.status(allOk ? 200 : 500).json({
+    status: allOk ? 'ok' : 'partial',
+    statements: stmts.length,
+    ok: results.filter(r => r.status === 'ok').length,
+    failed: results.filter(r => r.status === 'error').length,
+    details: results,
+    verify,
+  });
 };
