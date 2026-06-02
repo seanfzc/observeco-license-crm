@@ -55,3 +55,33 @@ DROP POLICY IF EXISTS licenses_service_access ON licenses;
 CREATE POLICY licenses_service_access ON licenses
   FOR ALL USING (true)
   WITH CHECK (true);
+
+-- License validation log — every time a license is validated
+CREATE TABLE IF NOT EXISTS validations_log (
+  id BIGSERIAL PRIMARY KEY,
+  license_key TEXT NOT NULL REFERENCES licenses(license_key) ON DELETE CASCADE,
+  success BOOLEAN NOT NULL,
+  ip_address TEXT,
+  user_agent TEXT,
+  machine_id TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_validations_key ON validations_log(license_key);
+CREATE INDEX IF NOT EXISTS idx_validations_ts ON validations_log(created_at);
+
+-- Admin audit log — track who did what
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  action TEXT NOT NULL,
+  license_key TEXT,
+  old_values JSONB,
+  new_values JSONB,
+  admin_id TEXT DEFAULT 'admin',
+  ip_address TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_key ON admin_audit_log(license_key);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON admin_audit_log(created_at);

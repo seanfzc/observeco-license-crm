@@ -16,11 +16,35 @@ module.exports = async function handler(req, res) {
   try {
     const supabase = getSupabase();
 
+    // Log the validation attempt
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+      || req.headers['x-real-ip']
+      || req.socket?.remoteAddress
+      || 'unknown';
+    const ua = req.headers['user-agent'] || '';
+    const machineId = req.body?.machine_id || '';
+
     const { data, error } = await supabase
       .from('licenses')
       .select('id, product_slug, status, expires_at, trial_ends_at, products(features)')
       .eq('license_key', license_key.trim())
       .single();
+
+    const success = !(error || !data);
+    const errorMsg = error ? 'License not found' : null;
+
+    // Write validation log asynchronously (fire-and-forget)
+    supabase
+      .from('validations_log')
+      .insert({
+        license_key: license_key.trim(),
+        success,
+        ip_address: ip,
+        user_agent: ua.slice(0, 500),
+        machine_id: machineId,
+        error_message: errorMsg,
+      })
+      .then().catch(e => console.error('log validation error:', e?.message));
 
     if (error || !data) {
       return res.status(404).json({ valid: false, error: 'License not found' });

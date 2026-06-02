@@ -64,18 +64,28 @@ tr:last-child td{border-bottom:none}
   </div>
 
   <div id="dashboardView" style="display:none">
-    <h1>🛡️ ObserveCo Licenses <small>CRM</small></h1>
+    <h1>🛡️ ObserveCo Licenses <small>CRM</small> <span style="font-size:0.7rem;font-weight:400;color:var(--text-dim);margin-left:auto">
+      <a href="#" onclick="showAuditLog()" style="color:var(--accent);text-decoration:none">📋 Audit Log</a>
+      <span style="margin:0 8px;color:var(--border)">|</span>
+      <a href="#" onclick="exportCsv()" style="color:var(--accent);text-decoration:none">📥 CSV</a>
+    </span></h1>
 
     <div class="stats" id="stats"></div>
 
     <div class="toolbar">
-      <input type="text" id="searchInput" placeholder="Search by email or name..." oninput="renderTable()">
-      <select id="filterSelect" onchange="renderTable()">
+      <input type="text" id="searchInput" placeholder="Search by email or name..." oninput="refresh()">
+      <select id="filterSelect" onchange="refresh()">
         <option value="all">All</option>
         <option value="active">Active</option>
         <option value="trialing">Trial</option>
         <option value="expired">Expired</option>
         <option value="cancelled">Cancelled</option>
+      </select>
+      <select id="sortSelect" onchange="refresh()">
+        <option value="created_at">Newest</option>
+        <option value="email">Email A-Z</option>
+        <option value="status">By Status</option>
+        <option value="expires_at">Expiring Soon</option>
       </select>
       <button class="btn btn-green" onclick="showIssueModal()">+ Issue Free License</button>
       <button class="btn btn-primary" style="background:var(--text-dim)" onclick="refresh()">↻ Refresh</button>
@@ -91,12 +101,47 @@ tr:last-child td{border-bottom:none}
           <th>License Key</th>
           <th>Created</th>
           <th>Expires</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody id="tableBody">
-        <tr><td colspan="7" class="loading">Loading...</td></tr>
+        <tr><td colspan="8" class="loading">Loading...</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<div class="modal" id="editModal">
+  <div class="modal-content">
+    <h2>Edit License</h2>
+    <input type="hidden" id="editKey">
+    <label for="editEmail">Email</label>
+    <input type="email" id="editEmail">
+    <label for="editName">Name</label>
+    <input type="text" id="editName">
+    <label for="editProduct">Product</label>
+    <select id="editProduct">
+      <option value="solo">Solo ($9/mo)</option>
+    </select>
+    <label for="editExpires">Expires</label>
+    <input type="date" id="editExpires">
+    <label for="editNotes">Admin Notes</label>
+    <textarea id="editNotes" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:0.9rem;font-family:inherit;min-height:60px;resize:vertical"></textarea>
+    <div class="modal-actions">
+      <button class="btn" style="background:var(--border);color:var(--text)" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditLicense()">Save</button>
+    </div>
+    <p id="editError" class="error"></p>
+  </div>
+</div>
+
+<div class="modal" id="detailModal">
+  <div class="modal-content" style="max-width:640px;max-height:80vh;overflow-y:auto">
+    <h2 id="detailTitle">License Details</h2>
+    <div id="detailBody" style="font-size:0.85rem">Loading...</div>
+    <div class="modal-actions">
+      <button class="btn" style="background:var(--border);color:var(--text)" onclick="closeDetailModal()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -131,6 +176,7 @@ tr:last-child td{border-bottom:none}
 <script>
 let apiKey = '';
 let licenses = [];
+let products = [];
 let keyCache = null;
 
 function login() {
@@ -195,17 +241,38 @@ async function fetchStats() {
 }
 
 async function refresh() {
-  document.getElementById('tableBody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
+  document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" class="loading">Loading...</td></tr>';
   try {
-    const [stats, list] = await Promise.all([
+    const search = document.getElementById('searchInput').value;
+    const filter = document.getElementById('filterSelect').value;
+    const sort = document.getElementById('sortSelect').value;
+    const params = new URLSearchParams({ per_page: '200', sort: sort || 'created_at', order: 'desc' });
+    if (search) params.set('q', search);
+    if (filter && filter !== 'all') params.set('status', filter);
+
+    const [stats, listResp, prods] = await Promise.all([
       api('/api/admin/stats'),
-      api('/api/admin/licenses'),
+      api('/api/admin/licenses?' + params.toString()),
+      api('/api/admin/products').catch(() => []),
     ]);
-    licenses = list || [];
+
+    products = prods || [];
+
+    // Populate product dropdowns dynamically
+    const prodOpts = products.map(p => `<option value="${esc(p.slug)}">${esc(p.name)} (${esc(p.price_display || '?')})</option>`).join('');
+    const issueProduct = document.getElementById('issueProduct');
+    const editProduct = document.getElementById('editProduct');
+    if (prodOpts) {
+      issueProduct.innerHTML = prodOpts;
+      editProduct.innerHTML = prodOpts;
+    }
+
+    // Support both new (paginated) and old (flat) response
+    licenses = listResp.data || listResp || [];
     renderStats(stats);
     renderTable();
   } catch (err) {
-    document.getElementById('tableBody').innerHTML = `<tr><td colspan="7" class="error" style="text-align:center;padding:40px;color:var(--red)">${err.message}</td></tr>`;
+    document.getElementById('tableBody').innerHTML = `<tr><td colspan="8" class="error" style="text-align:center;padding:40px;color:var(--red)">${err.message}</td></tr>`;
   }
 }
 
@@ -233,8 +300,8 @@ function renderTable() {
     return;
   }
 
-  document.getElementById('tableBody').innerHTML = rows.map(l => `
-    <tr>
+document.getElementById('tableBody').innerHTML = rows.map(l => `
+    <tr onclick="showDetail('${esc(l.license_key)}')" style="cursor:pointer">
       <td>${esc(l.email)}</td>
       <td>${esc(l.name || '-')}</td>
       <td>${esc(l.product_slug)}</td>
@@ -242,6 +309,11 @@ function renderTable() {
       <td class="key-mono">${esc(l.license_key)}</td>
       <td>${fmtDate(l.created_at)}</td>
       <td>${l.expires_at ? fmtDate(l.expires_at) : '-'}</td>
+      <td onclick="event.stopPropagation()">
+        <button class="btn btn-primary" style="padding:4px 8px;font-size:0.75rem" onclick="showEditModal('${esc(l.license_key)}','${esc(l.email)}','${esc(l.name||'')}','${esc(l.product_slug)}','${l.expires_at||''}')">✎</button>
+        ${l.status === 'active' || l.status === 'trialing' ? `<button class="btn btn-red" style="padding:4px 8px;font-size:0.75rem" onclick="suspendLicense('${esc(l.license_key)}')">⏸</button>` : l.status === 'expired' ? `<button class="btn btn-green" style="padding:4px 8px;font-size:0.75rem" onclick="reinstateLicense('${esc(l.license_key)}')">▶</button>` : ''}
+        ${l.status !== 'cancelled' ? `<button class="btn btn-red" style="padding:4px 8px;font-size:0.75rem;margin-left:4px" onclick="deleteLicense('${esc(l.license_key)}')">✕</button>` : ''}
+      </td>
     </tr>
   `).join('');
 }
@@ -288,6 +360,219 @@ async function issueLicense() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Create License';
+  }
+}
+
+function showEditModal(key, email, name, product, expires) {
+  document.getElementById('editKey').value = key;
+  document.getElementById('editEmail').value = email;
+  document.getElementById('editName').value = name === '-' ? '' : name;
+  document.getElementById('editProduct').value = product || 'solo';
+  document.getElementById('editExpires').value = expires ? expires.slice(0,10) : '';
+  document.getElementById('editNotes').value = '';
+  // Fetch full license to get notes
+  api(`/api/admin/licenses/${encodeURIComponent(key)}`).then(l => {
+    document.getElementById('editNotes').value = (l.metadata && l.metadata.notes) || '';
+  }).catch(() => {});
+  document.getElementById('editError').textContent = '';
+  document.getElementById('editModal').classList.add('show');
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('show');
+}
+
+async function saveEditLicense() {
+  const key = document.getElementById('editKey').value;
+  const email = document.getElementById('editEmail').value.trim();
+  const name = document.getElementById('editName').value.trim();
+  const product = document.getElementById('editProduct').value;
+  const expires = document.getElementById('editExpires').value;
+
+  if (!email || !email.includes('@')) {
+    document.getElementById('editError').textContent = 'Valid email required';
+    return;
+  }
+
+  const updates = { email, name, product_slug: product };
+  if (expires) updates.expires_at = new Date(expires + 'T23:59:59Z').toISOString();
+  const notes = document.getElementById('editNotes').value.trim();
+  if (notes) updates.notes = notes;
+
+  const btn = document.querySelector('#editModal .btn-primary');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    await api(`/api/admin/licenses/${encodeURIComponent(key)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+    closeEditModal();
+    showToast('✅ License updated', 'success');
+    refresh();
+  } catch (err) {
+    document.getElementById('editError').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+}
+
+async function suspendLicense(key) {
+  if (!confirm(`Suspend license ${key}? The user will lose access.`)) return;
+  try {
+    const result = await api(`/api/admin/licenses/${encodeURIComponent(key)}/suspend`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Admin suspension' }),
+    });
+    showToast(`⏸ License suspended: ${result.license.license_key}`, 'success');
+    refresh();
+  } catch (err) {
+    showToast(`❌ ${err.message}`, 'error');
+  }
+}
+
+async function reinstateLicense(key) {
+  if (!confirm(`Reinstate license ${key}? This will reactivate access.`)) return;
+  try {
+    const result = await api(`/api/admin/licenses/${encodeURIComponent(key)}/reinstate`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Admin reinstatement' }),
+    });
+    showToast(`▶ License reinstated: ${result.license.license_key}`, 'success');
+    refresh();
+  } catch (err) {
+    showToast(`❌ ${err.message}`, 'error');
+  }
+}
+
+async function showAuditLog() {
+  try {
+    const entries = await api('/api/admin/audit-log?limit=100');
+    const modal = document.createElement('div');
+    modal.className = 'modal show';
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width:800px;max-height:80vh;overflow-y:auto">
+        <h2>📋 Admin Audit Log</h2>
+        <table style="width:100%;font-size:0.8rem;margin-top:12px">
+          <thead>
+            <tr><th style="padding:4px">Time</th><th style="padding:4px">Action</th><th style="padding:4px">License</th><th style="padding:4px">Details</th></tr>
+          </thead>
+          <tbody>
+            ${entries.slice(0,100).map(e => {
+              const oldVals = e.old_values ? Object.keys(e.old_values).filter(k => k !== 'metadata' && k !== 'updated_at').map(k => `${k}: ${esc(e.old_values[k])}`).join(', ') : '';
+              const newVals = e.new_values ? Object.keys(e.new_values).filter(k => k !== 'metadata' && k !== 'updated_at').map(k => `${k}: ${esc(e.new_values[k])}`).join(', ') : '';
+              return `<tr>
+                <td style="padding:4px;white-space:nowrap">${fmtDate(e.created_at)}</td>
+                <td style="padding:4px"><span style="padding:1px 6px;border-radius:4px;background:var(--bg);font-size:0.75rem">${esc(e.action)}</span></td>
+                <td style="padding:4px;font-family:monospace;font-size:0.75rem">${esc(e.license_key || '-')}</td>
+                <td style="padding:4px;color:var(--text-dim);font-size:0.75rem">${oldVals ? esc(oldVals) : '-'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+        <div class="modal-actions">
+          <button class="btn" style="background:var(--border);color:var(--text)" onclick="this.closest('.modal').remove()">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  } catch (err) {
+    showToast('❌ ' + err.message, 'error');
+  }
+}
+
+function exportCsv() {
+  if (!licenses.length) { showToast('No data to export', 'error'); return; }
+  const headers = ['License Key','Email','Name','Product','Status','Created','Expires','Issued By'];
+  const rows = licenses.map(l => [
+    l.license_key,
+    l.email,
+    l.name || '',
+    l.product_slug,
+    l.status,
+    l.created_at,
+    l.expires_at || '',
+    l.issued_by || ''
+  ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(','));
+  const csv = [headers.join(','), ...rows].join('\\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'observeco-licenses-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('📥 CSV exported (' + rows.length + ' rows)', 'success');
+}
+
+function showDetail(key) {
+  document.getElementById('detailTitle').textContent = 'License Details: ' + key;
+  document.getElementById('detailBody').innerHTML = 'Loading...';
+  document.getElementById('detailModal').classList.add('show');
+
+  try {
+    const [license, validations] = await Promise.all([
+      api(`/api/admin/licenses/${encodeURIComponent(key)}`),
+      api(`/api/admin/licenses/${encodeURIComponent(key)}/validations`),
+    ]);
+
+    let notesSection = '';
+    if (license.metadata && license.metadata.notes) {
+      notesSection = `<div style="margin-top:12px"><strong>Notes:</strong><br>${esc(license.metadata.notes)}</div>`;
+    }
+
+    const valRows = (validations || []).slice(0, 20).map(v => `
+      <tr>
+        <td style="color:${v.success ? 'var(--green)' : 'var(--red)'}">${v.success ? '✅' : '❌'}</td>
+        <td>${fmtDate(v.created_at)}</td>
+        <td style="font-size:0.75rem">${esc(v.ip_address || '-')}</td>
+        <td style="font-size:0.75rem">${esc(v.machine_id ? v.machine_id.slice(0,12) : '-')}</td>
+        <td style="font-size:0.75rem;color:var(--text-dim)">${esc((v.error_message || '').slice(0,40))}</td>
+      </tr>
+    `).join('');
+
+    document.getElementById('detailBody').innerHTML = `
+      <table style="width:100%;margin-bottom:12px">
+        <tr><td style="color:var(--text-dim);width:100px">Email</td><td>${esc(license.email)}</td></tr>
+        <tr><td style="color:var(--text-dim)">Name</td><td>${esc(license.name || '-')}</td></tr>
+        <tr><td style="color:var(--text-dim)">Product</td><td>${esc(license.product_slug)}</td></tr>
+        <tr><td style="color:var(--text-dim)">Status</td><td><span class="status status-${esc(license.status)}">${license.status}</span></td></tr>
+        <tr><td style="color:var(--text-dim)">Created</td><td>${fmtDate(license.created_at)}</td></tr>
+        <tr><td style="color:var(--text-dim)">Expires</td><td>${license.expires_at ? fmtDate(license.expires_at) : '-'}</td></tr>
+        <tr><td style="color:var(--text-dim)">Issued By</td><td>${esc(license.issued_by || '-')}</td></tr>
+        <tr><td style="color:var(--text-dim)">Stripe</td><td>${license.stripe_subscription_id ? `<a href="https://dashboard.stripe.com/subscriptions/${esc(license.stripe_subscription_id)}" target="_blank" style="color:var(--accent)">${esc(license.stripe_subscription_id.slice(0,16))}…</a>` : '-'}</td></tr>
+      </table>
+      ${notesSection}
+      <h3 style="font-size:0.85rem;margin:12px 0 6px;color:var(--text-dim)">Recent Validations (${(validations||[]).length})</h3>
+      <table style="width:100%;font-size:0.8rem">
+        <thead>
+          <tr><th style="padding:4px">Result</th><th style="padding:4px">Time</th><th style="padding:4px">IP</th><th style="padding:4px">Machine</th><th style="padding:4px">Error</th></tr>
+        </thead>
+        <tbody>${valRows || '<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-dim)">No validation history yet</td></tr>'}</tbody>
+      </table>
+    `;
+  } catch (err) {
+    document.getElementById('detailBody').innerHTML = `<div class="error">${err.message}</div>`;
+  }
+}
+
+function closeDetailModal() {
+  document.getElementById('detailModal').classList.remove('show');
+}
+
+async function deleteLicense(key) {
+  if (!confirm(`Cancel license ${key}? This will revoke access permanently. The user will need a new license.`)) return;
+  try {
+    const result = await api(`/api/admin/licenses/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    });
+    showToast(`✕ License cancelled: ${result.license.license_key}`, 'success');
+    refresh();
+  } catch (err) {
+    showToast(`❌ ${err.message}`, 'error');
   }
 }
 

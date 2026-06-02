@@ -8,6 +8,21 @@ const { getSupabase } = require('../_supabase.js');
 const { getStripe } = require('../_stripe.js');
 const crypto = require('crypto');
 
+function generateLicenseKey() {
+  const raw = crypto.randomUUID().slice(0, 8).toUpperCase();
+  const checksum = (() => {
+    let sum = 0, double = false;
+    for (let i = raw.length - 1; i >= 0; i--) {
+      let d = parseInt(raw[i], 16);
+      if (isNaN(d)) d = 0;
+      if (double) { d *= 2; if (d > 15) d -= 15; }
+      sum += d; double = !double;
+    }
+    return ((10 - (sum % 10)) % 10).toString(16).toUpperCase();
+  })();
+  return `OBS-${raw}${checksum}`;
+}
+
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -62,7 +77,7 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ received: true });
       }
 
-      const license_key = 'OBS-' + crypto.randomUUID().slice(0, 8).toUpperCase();
+      const license_key = generateLicenseKey();
       const expires_at = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
       const { error: insertError } = await supabase
@@ -84,6 +99,78 @@ module.exports = async function handler(req, res) {
       }
 
       return res.status(200).json({ received: true, license_key });
+    }
+
+    if (event.type === 'customer.subscription.created') {
+      const sub = event.data.object;
+      const email = sub.customer_email || sub.customer?.email || '';
+      const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id;
+      const subscriptionId = sub.id;
+      const items = sub.items?.data || [];
+      const price = items[0]?.price;
+      const productSlug = price?.metadata?.product_slug || 'solo';
+      const interval = price?.recurring?.interval || 'month';
+      const now = new Date();
+      const expires_at = new Date(now.getTime() + (interval === 'year' ? 365 : 30) * 24 * 60 * 60 * 1000).toISOString();
+
+      if (!email) {
+        return res.status(200).json({ received: true });
+      }
+
+      // Check if license already exists for this subscription
+      const { data: existing } = await supabase
+        .from('licenses')
+        .select('id, status')
+        .eq('stripe_subscription_id', subscriptionId)
+        .single();
+
+      if (existing) {
+        // Update existing license
+        await supabase
+          .from('licenses')
+          .update({ status: 'active', expires_at, updated_at: now.toISOString() })
+          .eq('stripe_subscription_id', subscriptionId);
+      } else {
+        // Create new license
+        const license_key = generateLicenseKey();
+        await supabase
+          .from('licenses')
+          .insert({
+            product_slug: productSlug,
+            email: email.toLowerCase(),
+            name: email.split('@')[0],
+            license_key,
+            status: 'active',
+            expires_at,
+            stripe_subscription_id: subscriptionId,
+            stripe_customer_id: customerId,
+            issued_by: 'stripe',
+          });
+      }
+
+      return res.status(200).json({ received: true });
+    }
+
+    if (event.type === 'customer.subscription.updated') {
+      const sub = event.data.object;
+      if (sub.status === 'past_due' || sub.status === 'unpaid') {
+        await supabase
+          .from('licenses')
+          .update({ status: 'expired', updated_at: new Date().toISOString() })
+          .eq('stripe_subscription_id', sub.id);
+      } else if (sub.status === 'active') {
+        // Extend expiration
+        const items = sub.items?.data || [];
+        const price = items[0]?.price;
+        const interval = price?.recurring?.interval || 'month';
+        const now = new Date();
+        const expires_at = new Date(now.getTime() + (interval === 'year' ? 365 : 30) * 24 * 60 * 60 * 1000).toISOString();
+        await supabase
+          .from('licenses')
+          .update({ status: 'active', expires_at, updated_at: now.toISOString() })
+          .eq('stripe_subscription_id', sub.id);
+      }
+      return res.status(200).json({ received: true });
     }
 
     if (event.type === 'customer.subscription.deleted') {

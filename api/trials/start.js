@@ -3,6 +3,21 @@
 const { getSupabase } = require('../_supabase.js');
 const crypto = require('crypto');
 
+function generateLicenseKey() {
+  const raw = crypto.randomUUID().slice(0, 8).toUpperCase();
+  const checksum = (() => {
+    let sum = 0, double = false;
+    for (let i = raw.length - 1; i >= 0; i--) {
+      let d = parseInt(raw[i], 16);
+      if (isNaN(d)) d = 0;
+      if (double) { d *= 2; if (d > 15) d -= 15; }
+      sum += d; double = !double;
+    }
+    return ((10 - (sum % 10)) % 10).toString(16).toUpperCase();
+  })();
+  return `OBS-${raw}${checksum}`;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -32,7 +47,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const license_key = 'OBS-' + crypto.randomUUID().slice(0, 8).toUpperCase() + '-' + crypto.randomUUID().slice(0, 4).toUpperCase();
+    const license_key = generateLicenseKey();
     const trial_ends_at = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const { data, error } = await supabase
