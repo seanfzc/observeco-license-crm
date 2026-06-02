@@ -77,13 +77,18 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ received: true });
       }
 
+      // Resolve product slug: session metadata > line items > fallback
+      const planFromMetadata = session.metadata?.plan;
+      const lineItemSlug = session.line_items?.data?.[0]?.price?.metadata?.product_slug;
+      const productSlug = planFromMetadata || lineItemSlug || 'solo';
+
       const license_key = generateLicenseKey();
       const expires_at = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
       const { error: insertError } = await supabase
         .from('licenses')
         .insert({
-          product_slug: 'solo',
+          product_slug: productSlug,
           email: email.toLowerCase(),
           name: session.customer_details?.name || email.split('@')[0],
           license_key,
