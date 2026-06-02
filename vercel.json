@@ -8,6 +8,6 @@
   },
   "rewrites": [
     { "source": "/admin", "destination": "/admin.html" },
-    { "source": "/admin/(.*)", "destination": "/admin.html" }
+    { "source": "/admin(/index.html)?", "destination": "/admin.html" }
   ]
 }
